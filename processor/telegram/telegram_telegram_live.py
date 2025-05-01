@@ -1,4 +1,3 @@
-# processor/reposting_live.py
 import os
 import time
 import asyncio
@@ -18,7 +17,7 @@ SESSION_STRING = os.getenv('TELEGRAM_SESSION_STRING') or "your_session_string_he
 source_channels = [-1002454067712, -1002167975984]
 
 # Target channel: where messages will be reposted
-target_channel = -1002634663671
+target_channel = '@esco_agency'
 client = TelegramClient(
     StringSession(SESSION_STRING),
     API_ID,
@@ -103,6 +102,7 @@ async def generate_tweet_content(original_text: str) -> str:
     """
     Uses OpenAI to generate a modified version of the text:
       - Change manager's name to '@ANeliteagency'
+      - Ensure minimum prices (1h: 5000 CZK, 2h: 10000 CZK) and adjust as needed.
       - Increase each price appropriately, convert all prices from CZK to EUR (rounded up).
       - Remove quotes or extraneous symbols at the beginning.
       - Remove additional links and unnecessary commentary.
@@ -110,7 +110,8 @@ async def generate_tweet_content(original_text: str) -> str:
     prompt_text = (
         "Rewrite the following advertisement in English with the following modifications:\n"
         "1) Change the manager's name to '@ANeliteagency'.\n"
-        "2) Convert price to EUR and USD "
+        "2) Ensure that the minimum price for one hour is set to 5000 CZK and for 2 hours to 10000 CZK; adjust any lower price upward if necessary. "
+        "Increase each price as appropriate, then convert all price values from CZK to EUR and round up to the nearest whole number. "
         "Note that outcall is always 50 EUR more than incall, etc.\n"
         "3) Remove any quotes around the message and any extraneous symbols at the beginning.\n"
         "4) Remove additional links from the message.\n"

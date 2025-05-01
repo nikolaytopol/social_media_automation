@@ -1,4 +1,8 @@
 # bot/handlers.py
+from config.db import get_accounts, add_account, remove_account
+from keyboards import account_list_keyboard, service_selection_keyboard
+import json
+
 def start_handler(update, context):
     update.message.reply_text("Welcome! Please enter the channels to monitor (e.g., @channel1, @channel2):")
     # Continue conversation...
@@ -39,4 +43,50 @@ def save_account(update, context):
     accounts.append(new_account)
     context.user_data['accounts'] = accounts
     update.message.reply_text(f"Account '{new_account}' has been added!")
+    return ConversationHandler.END
+
+async def manage_accounts_entry(update, context) -> int:
+    """Entry point for managing accounts."""
+    query = update.callback_query
+    await query.answer()
+    accounts = get_accounts(query.from_user.id)
+    await query.edit_message_text(
+        "Here are your current accounts:",
+        reply_markup=account_list_keyboard(accounts)
+    )
+    return MANAGE_ACCOUNTS
+
+async def choose_service_to_add(update, context) -> int:
+    """Prompt user to choose a service to add."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Which service do you want to add?",
+        reply_markup=service_selection_keyboard()
+    )
+    return ADD_ACCOUNT_SERVICE
+
+async def add_account_service(update, context) -> int:
+    """Handle service selection for adding an account."""
+    query = update.callback_query
+    await query.answer()
+    service = query.data  # e.g., "telegram" or "twitter"
+    context.user_data['new_service'] = service
+    await query.edit_message_text(f"Now send me the credentials for {service} as JSON.")
+    return ADD_ACCOUNT_CREDENTIALS
+
+async def add_account_credentials(update, context) -> int:
+    """Save account credentials provided by the user."""
+    creds = json.loads(update.message.text)
+    add_account(update.message.from_user.id, context.user_data['new_service'], creds)
+    await update.message.reply_text("Account added!")
+    return ConversationHandler.END
+
+async def remove_account_choice(update, context) -> int:
+    """Handle account removal."""
+    query = update.callback_query
+    await query.answer()
+    service, idx = query.data.split("|")  # callback_data="twitter|1"
+    remove_account(query.from_user.id, service, int(idx))
+    await query.edit_message_text("Removed. Back to main menu.")
     return ConversationHandler.END
