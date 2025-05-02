@@ -25,7 +25,7 @@ API_HASH = os.getenv('TELEGRAM_API_HASH')
 SESSION_STRING = os.getenv('TELEGRAM_SESSION_STRING')
 
 # OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
-OPENAI_API_KEY ='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'
+OPENAI_API_KEY =os.getenv('OPENAI_API_KEY')
 openai.api_key = OPENAI_API_KEY
 
 # Authenticate with Twitter API v2 using Tweepy
