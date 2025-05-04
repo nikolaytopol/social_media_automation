@@ -11,37 +11,62 @@
         
         <div class="mb-3">
             <a href="{{ url_for('webapp.dashboard') }}" class="btn btn-secondary">Back to Dashboard</a>
+            <a href="{{ url_for('webapp.list_workflows') }}" class="btn btn-primary">Manage All Workflows</a>
         </div>
         
         <div class="card">
+            <div class="card-header">
+                <h5 class="card-title mb-0">Available Workflows</h5>
+            </div>
             <div class="card-body">
-                <h5 class="card-title">Select a Workflow to Start</h5>
-                
-                <table class="table table-striped">
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>Type</th>
-                            <th>Status</th>
-                            <th>Action</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for workflow in workflows %}
-                        {% if workflow.status == 'stopped' %}
-                        <tr>
-                            <td>{{ workflow._id }}</td>
-                            <td>{{ workflow.type }}</td>
-                            <td>{{ workflow.status }}</td>
-                            <td>
-                                <a href="{{ url_for('webapp.start_workflow', workflow_id=workflow._id) }}" 
-                                   class="btn btn-success btn-sm">Start</a>
-                            </td>
-                        </tr>
-                        {% endif %}
-                        {% endfor %}
-                    </tbody>
-                </table>
+                {% if workflows %}
+                <div class="table-responsive">
+                    <table class="table table-hover">
+                        <thead>
+                            <tr>
+                                <th>Name/ID</th>
+                                <th>Type</th>
+                                <th>Sources</th>
+                                <th>Destinations</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for workflow in workflows %}
+                            {% if workflow.status == 'stopped' %}
+                            <tr>
+                                <td>{{ workflow._id }}</td>
+                                <td>{{ workflow.type }}</td>
+                                <td>
+                                    <ul class="list-unstyled">
+                                        {% for source in workflow.sources %}
+                                        <li>{{ source.name }}</li>
+                                        {% endfor %}
+                                    </ul>
+                                </td>
+                                <td>
+                                    <ul class="list-unstyled">
+                                        {% for dest in workflow.destinations %}
+                                        <li>{{ dest.name }}</li>
+                                        {% endfor %}
+                                    </ul>
+                                </td>
+                                <td>{{ workflow.status }}</td>
+                                <td>
+                                    <a href="{{ url_for('webapp.start_workflow', workflow_id=workflow._id) }}" class="btn btn-success btn-sm">Start</a>
+                                    <a href="{{ url_for('webapp.edit_workflow', workflow_id=workflow._id) }}" class="btn btn-info btn-sm">Edit</a>
+                                    <a href="{{ url_for('webapp.delete_workflow', workflow_id=workflow._id) }}" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure you want to delete this workflow?')">Delete</a>
+                                </td>
+                            </tr>
+                            {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <p>No workflows available. <a href="{{ url_for('webapp.create_workflow') }}">Create a new workflow</a>.</p>
+                {% endif %}
             </div>
         </div>
     </div>

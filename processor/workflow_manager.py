@@ -6,15 +6,20 @@ from pymongo import MongoClient
 from bson.objectid import ObjectId
 from processor.workflows.live_repost_workflow import LiveRepostWorkflow
 from processor.workflows.history_repost_workflow import HistoryRepostWorkflow
+from processor.workflow_registry import WorkflowRegistry
+from datetime import datetime
 
 class WorkflowManager:
     def __init__(self, mongo_uri="mongodb://127.0.0.1:27017/", db_name="social_manager"):
         """Initialize the workflow manager."""
         self.client = MongoClient(mongo_uri)
+        self.db_name = db_name  # Add this line
         self.db = self.client[db_name]
         self.collection = self.db["workflows"]
         self.workflows = {}  # Store active workflow instances
         self.threads = {}  # Store workflow threads
+        self.registry = WorkflowRegistry()
+        self.registry.discover_workflows()
         self._load_existing_workflows()
     
     def _load_existing_workflows(self):
@@ -45,62 +50,106 @@ class WorkflowManager:
         
         return workflow_id
     
-    def start_workflow(self, workflow_id):
-        """
-        Start a workflow by its ID.
+    def get_preset_workflows(self):
+        """Get available preset workflows."""
+        presets = []
+        for workflow_id, workflow in self.registry.get_preset_workflows().items():
+            info = workflow['info']
+            presets.append({
+                "id": workflow_id,
+                "name": info.get("name", workflow_id),
+                "description": info.get("description", ""),
+                "type": info.get("workflow_type", "live"),
+                "author": info.get("author", "Unknown"),
+                "version": info.get("version", "1.0"),
+                "required_fields": info.get("required_fields", []),
+                "optional_fields": info.get("optional_fields", [])
+            })
+        return presets
+    
+    def create_from_preset(self, preset_id, config):
+        """Create a workflow from a preset."""
+        workflow_class = self.registry.get_workflow_class(preset_id)
+        if not workflow_class:
+            return None, f"Preset '{preset_id}' not found"
         
-        Args:
-            workflow_id (str): The ID of the workflow to start.
+        # Create workflow configuration
+        workflow_config = {
+            "user_id": config.get("user_id", 1),
+            "type": workflow_class.workflow_type,
+            "sources": [],
+            "destinations": [],
+            "is_preset": True,
+            "preset_id": preset_id
+        }
+        
+        # Process source channels
+        if "source_channels" in config:
+            workflow_config["sources"] = [
+                {"type": "telegram", "name": src.strip()}
+                for src in config["source_channels"].split(",")
+                if src.strip()
+            ]
             
-        Returns:
-            bool: True if successfully started, False otherwise.
-        """
-        workflow = self.workflows.get(workflow_id)
+        # Process target channels
+        if "target_channels" in config:
+            workflow_config["destinations"] = [
+                {"type": "telegram", "name": target.strip()}
+                for target in config["target_channels"].split(",")
+                if target.strip()
+            ]
+            
+        # Copy other config fields
+        for field in ["filter_prompt", "mod_prompt", "duplicate_check", "preserve_files", "start_date", "ai_provider"]:
+            if field in config:
+                workflow_config[field] = config[field]
+        
+        # Create workflow in database
+        workflow_id = self.create_workflow(workflow_config)
+        return workflow_id, "Workflow created successfully"
+    
+    def start_workflow(self, workflow_id):
+        """Start a workflow by ID."""
+        workflow = self.db.workflows.find_one({"_id": ObjectId(workflow_id)})
         if not workflow:
-            print(f"[WorkflowManager] Workflow {workflow_id} not found.")
             return False
             
         if workflow.get("status") == "running":
-            print(f"[WorkflowManager] Workflow {workflow_id} is already running.")
+            return True  # Already running
+            
+        try:
+            # Check if this is a preset workflow
+            if workflow.get("is_preset") and workflow.get("preset_id"):
+                preset_id = workflow.get("preset_id")
+                workflow_class = self.registry.get_workflow_class(preset_id)
+                if workflow_class:
+                    workflow_instance = workflow_class(workflow)
+                else:
+                    # Fall back to standard workflow types if preset not found
+                    if workflow["type"] == "live":
+                        from processor.workflows.live_repost_workflow import LiveRepostWorkflow
+                        workflow_instance = LiveRepostWorkflow(workflow)
+                    else:
+                        return False
+            else:
+                # Not a preset, use standard workflow types
+                if workflow["type"] == "live":
+                    from processor.workflows.live_repost_workflow import LiveRepostWorkflow
+                    workflow_instance = LiveRepostWorkflow(workflow)
+                else:
+                    return False
+                    
+            # Start the workflow
+            asyncio.create_task(workflow_instance.start())
+            self.active_workflows[str(workflow["_id"])] = workflow_instance
+            self.db.workflows.update_one({"_id": workflow["_id"]}, {"$set": {"status": "running"}})
             return True
             
-        # Determine workflow type
-        workflow_type = workflow.get("type", "live")  # Default to live
-        
-        # Create appropriate workflow instance
-        if workflow_type == "live":
-            workflow_instance = LiveRepostWorkflow(workflow)
-        elif workflow_type == "history":
-            workflow_instance = HistoryRepostWorkflow(workflow)
-        else:
-            print(f"[WorkflowManager] Unknown workflow type: {workflow_type}")
+        except Exception as e:
+            print(f"Error starting workflow: {e}")
+            import traceback
+            print(traceback.format_exc())
             return False
-            
-        # Update status in database
-        self.collection.update_one(
-            {"_id": ObjectId(workflow_id)}, 
-            {"$set": {"status": "running"}}
-        )
-        
-        # Update status in memory
-        workflow["status"] = "running"
-        
-        # Start in a separate thread
-        def run_workflow():
-            asyncio.run(workflow_instance.start())
-            
-        thread = threading.Thread(target=run_workflow)
-        thread.daemon = True
-        thread.start()
-        
-        # Store thread and instance
-        self.threads[workflow_id] = {
-            "thread": thread,
-            "instance": workflow_instance
-        }
-        
-        print(f"[WorkflowManager] Started workflow {workflow_id}")
-        return True
     
     def stop_workflow(self, workflow_id):
         """
@@ -187,3 +236,33 @@ class WorkflowManager:
         del self.workflows[workflow_id]
         
         return True
+
+    def log_message(self, workflow_id, message_data):
+        """
+        Log a processed message for a workflow.
+        
+        Args:
+            workflow_id (str): The workflow ID
+            message_data (dict): Data about the processed message
+        """
+        # Ensure we have a collection for workflow messages
+        if not hasattr(self, 'message_collection'):
+            self.message_collection = self.db['workflow_messages']
+            
+            # Create indexes if needed
+            self.message_collection.create_index([('workflow_id', 1), ('timestamp', -1)])
+            self.message_collection.create_index('message_key', unique=True)
+        
+        # Add timestamp and workflow_id
+        message_data['timestamp'] = datetime.now()
+        message_data['workflow_id'] = workflow_id
+        
+        # Insert the message, with upsert in case of duplicates
+        try:
+            self.message_collection.update_one(
+                {'message_key': message_data.get('message_key')}, 
+                {'$set': message_data},
+                upsert=True
+            )
+        except Exception as e:
+            print(f"Error logging message: {e}")

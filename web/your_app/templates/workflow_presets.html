@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Workflow Presets</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="p-4">
+  <div class="container">
+    <h1 class="mb-4">🧩 Workflow Presets</h1>
+    
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ 'success' if category == 'success' else 'danger' }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    
+    <div class="mb-3">
+      <a href="{{ url_for('webapp.dashboard') }}" class="btn btn-secondary">Back to Dashboard</a>
+      <a href="{{ url_for('webapp.list_workflows') }}" class="btn btn-primary">Manage Workflows</a>
+    </div>
+    
+    <div class="row">
+      {% for preset in presets %}
+      <div class="col-md-6 mb-4">
+        <div class="card h-100">
+          <div class="card-body">
+            <h5 class="card-title">{{ preset.name }}</h5>
+            <h6 class="card-subtitle mb-2 text-muted">Type: {{ preset.type|capitalize }} | Version: {{ preset.version }}</h6>
+            <p class="card-text">{{ preset.description }}</p>
+            <p class="small text-muted">By: {{ preset.author }}</p>
+            <div class="d-grid">
+              <a href="{{ url_for('webapp.create_from_preset', preset_id=preset.id) }}" 
+                 class="btn btn-primary">Use This Preset</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</body>
+</html>

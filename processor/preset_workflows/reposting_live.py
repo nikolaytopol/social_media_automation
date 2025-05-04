@@ -1,10 +1,12 @@
 import os
 import time
 import asyncio
-import openai
+import logging
+from datetime import datetime
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
-
+from processor.openai_utils import OpenAIUtils
+from processor.deepseek_utils import DeepSeekUtils
 
 # ------------------------------------------------------------------------
 # 1) TELEGRAM CLIENT SETUP WITH AUTO-RECONNECT OPTIONS
@@ -26,31 +28,35 @@ client = TelegramClient(
     auto_reconnect=True
 )
 
+# Set up logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger('RepostingLive')
+
 # ------------------------------------------------------------------------
 # 2) SAFE SEND WRAPPERS
 # ------------------------------------------------------------------------
 async def safe_send_message(target, text):
     if not client.is_connected():
-        print("Client not connected. Reconnecting...")
+        logger.info("Client not connected. Reconnecting...")
         await client.connect()
     for attempt in range(3):
         try:
             return await client.send_message(target, text)
         except ConnectionError as ce:
-            print(f"Error sending message (attempt {attempt+1}): {ce}")
+            logger.error(f"Error sending message (attempt {attempt+1}): {ce}")
             await client.connect()
             await asyncio.sleep(1)
     raise Exception("Unable to send message after several retries.")
 
 async def safe_send_file(target, file, caption=None, allow_cache=False):
     if not client.is_connected():
-        print("Client not connected. Reconnecting...")
+        logger.info("Client not connected. Reconnecting...")
         await client.connect()
     for attempt in range(3):
         try:
             return await client.send_file(target, file, caption=caption, allow_cache=allow_cache)
         except ConnectionError as ce:
-            print(f"Error sending file (attempt {attempt+1}): {ce}")
+            logger.error(f"Error sending file (attempt {attempt+1}): {ce}")
             await client.connect()
             await asyncio.sleep(1)
     raise Exception("Unable to send file after several retries.")
@@ -73,7 +79,7 @@ async def passes_filter(message_text: str) -> bool:
         f"Message: {message_text}"
     )
     try:
-        response = openai.chat.completions.create(
+        response = OpenAIUtils.chat_completion(
             model="gpt-4o-2024-11-20",
             messages=[
                 {
@@ -89,10 +95,10 @@ async def passes_filter(message_text: str) -> bool:
             temperature=0
         )
         filter_result = response.choices[0].message.content.strip().lower()
-        print(f"[Filter] Message text: {message_text[:50]}... => {filter_result}")
+        logger.info(f"[Filter] Message text: {message_text[:50]}... => {filter_result}")
         return (filter_result == "yes")
     except Exception as e:
-        print(f"Error during filtering: {e}")
+        logger.error(f"Error during filtering: {e}")
         return False
 
 # ------------------------------------------------------------------------
@@ -117,7 +123,7 @@ async def generate_tweet_content(original_text: str) -> str:
         f"Original text: {original_text}"
     )
     try:
-        response = openai.chat.completions.create(
+        response = OpenAIUtils.chat_completion(
             model="gpt-4o-2024-11-20",
             messages=[
                 {
@@ -130,10 +136,10 @@ async def generate_tweet_content(original_text: str) -> str:
             temperature=0
         )
         tweet_text = response.choices[0].message.content.strip()
-        print(f"[Generate] Modified text: {tweet_text[:50]}...")
+        logger.info(f"[Generate] Modified text: {tweet_text[:50]}...")
         return tweet_text
     except Exception as e:
-        print(f"Error generating text with OpenAI GPT: {e}")
+        logger.error(f"Error generating text with OpenAI GPT: {e}")
         return original_text  # Fallback to original text on error
 
 # ------------------------------------------------------------------------
@@ -146,24 +152,24 @@ async def new_message_handler(event):
         return
 
     message_text = event.message.message or ""
-    print(f"New single message from chat {event.chat_id}: {message_text[:50]}...")
+    logger.info(f"New single message from chat {event.chat_id}: {message_text[:50]}...")
     if await passes_filter(message_text):
         new_text = await generate_tweet_content(message_text)
         try:
             if event.message.media:
                 media_path = await event.message.download_media()
-                print(f"Downloaded media for message id {event.message.id}: {media_path}")
+                logger.info(f"Downloaded media for message id {event.message.id}: {media_path}")
                 await safe_send_file(target_channel, media_path, caption=new_text, allow_cache=False)
-                print(f"Reposted message id {event.message.id} with media to {target_channel}")
+                logger.info(f"Reposted message id {event.message.id} with media to {target_channel}")
                 if media_path and os.path.exists(media_path):
                     os.remove(media_path)
             else:
                 await safe_send_message(target_channel, new_text)
-                print(f"Reposted text message id {event.message.id} to {target_channel}")
+                logger.info(f"Reposted text message id {event.message.id} to {target_channel}")
         except Exception as e:
-            print(f"Error reposting message id {event.message.id}: {e}")
+            logger.error(f"Error reposting message id {event.message.id}: {e}")
     else:
-        print(f"Message id {event.message.id} did not pass filter. Skipped.")
+        logger.info(f"Message id {event.message.id} did not pass filter. Skipped.")
 
 @client.on(events.Album(chats=source_channels))
 async def album_handler(event):
@@ -171,7 +177,7 @@ async def album_handler(event):
         return
     # Use the text from the first message in the album
     main_text = event.messages[0].message or ""
-    print(f"New album received from chat {event.chat_id}: {len(event.messages)} items. Base text: {main_text[:50]}...")
+    logger.info(f"New album received from chat {event.chat_id}: {len(event.messages)} items. Base text: {main_text[:50]}...")
     if await passes_filter(main_text):
         new_text = await generate_tweet_content(main_text)
         media_files = []
@@ -182,35 +188,69 @@ async def album_handler(event):
                     if path:
                         media_files.append(path)
                 except Exception as e:
-                    print(f"Error downloading media for message {msg.id}: {e}")
+                    logger.error(f"Error downloading media for message {msg.id}: {e}")
         try:
             if media_files:
                 await safe_send_file(target_channel, file=media_files, caption=new_text, allow_cache=False)
-                print(f"Reposted album with {len(media_files)} files to {target_channel}")
+                logger.info(f"Reposted album with {len(media_files)} files to {target_channel}")
             else:
                 await safe_send_message(target_channel, new_text)
-                print(f"Reposted album text to {target_channel}")
+                logger.info(f"Reposted album text to {target_channel}")
         except Exception as e:
-            print(f"Error reposting album: {e}")
+            logger.error(f"Error reposting album: {e}")
         finally:
             for f in media_files:
                 if os.path.exists(f):
                     os.remove(f)
     else:
-        print("Album did not pass filter. Skipped.")
+        logger.info("Album did not pass filter. Skipped.")
 
 # ------------------------------------------------------------------------
-# 6) RUN THE CLIENT (LISTEN INDEFINITELY)
+# 6) WORKFLOW CLASS
+# ------------------------------------------------------------------------
+class TelegramRepostingWorkflow:
+    """Telegram channel reposting workflow."""
+    
+    # These class attributes are required for the WorkflowRegistry to detect this class
+    workflow_type = "live"
+    workflow_info = {
+        "id": "telegram_reposting",
+        "name": "Telegram Channel Reposting",
+        "description": "Repost content from one Telegram channel to another in real-time with AI filtering",
+        "author": "Admin",
+        "version": "1.0",
+        "required_fields": [
+            {"name": "source_channels", "type": "string", "label": "Source Channels"},
+            {"name": "target_channels", "type": "string", "label": "Target Channels"}
+        ],
+        "optional_fields": [
+            {"name": "filter_prompt", "type": "text", "label": "Filter Prompt", "required": False},
+            {"name": "mod_prompt", "type": "text", "label": "Modification Prompt", "required": False},
+            {"name": "duplicate_check", "type": "boolean", "label": "Check for Duplicates", "default": False}
+        ]
+    }
+    
+    def __init__(self, config):
+        """Initialize with configuration."""
+        self.config = config
+        
+    async def start(self):
+        """Start the workflow."""
+        logger.info("Starting Telegram Reposting Workflow...")
+        # Your existing start method here
+
+# ------------------------------------------------------------------------
+# 7) RUN THE CLIENT (LISTEN INDEFINITELY)
 # ------------------------------------------------------------------------
 def main():
-    print("Listening for new messages from source channels...")
+    logger.info("Listening for new messages from source channels...")
     while True:
         try:
             with client:
                 client.loop.run_until_complete(client.run_until_disconnected())
         except Exception as e:
-            print("Client disconnected with error:", e)
-            print("Attempting to reconnect in 5 seconds...")
+            logger.error("Client disconnected with error:", e)
+            logger.info("Attempting to reconnect in 5 seconds...")
             time.sleep(5)
 
 if __name__ == '__main__':

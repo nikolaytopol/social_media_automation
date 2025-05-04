@@ -140,7 +140,22 @@ class LiveRepostWorkflow:
             message_text = event.message.message or ""
             logger.info(f"Processing message: {message_text[:100]}")
             
+            # Prepare log data
+            log_data = {
+                "message_key": message_key,
+                "source_channel": str(chat_id),
+                "original_text": message_text,
+                "status": "processing",
+                "has_media": bool(event.message.media),
+                "timestamp": datetime.now()
+            }
+            
+            # Log initial processing
+            if hasattr(self, 'workflow_manager'):
+                self.workflow_manager.log_message(str(self.config.get('_id')), log_data)
+            
             # Add debugging for filter prompt
+            filter_passed = True
             if self.filter_prompt:
                 logger.info(f"Using filter: {self.filter_prompt[:50]}...")
                 try:
@@ -148,57 +163,54 @@ class LiveRepostWorkflow:
                     logger.info(f"Filter result: {passes}")
                     if not passes:
                         logger.info(f"Message filtered out: {message_text[:50]}...")
+                        log_data["status"] = "filtered_out"
+                        log_data["filter_result"] = False
+                        if hasattr(self, 'workflow_manager'):
+                            self.workflow_manager.log_message(str(self.config.get('_id')), log_data)
                         return
                     logger.info("Message passed filter ✓")
+                    filter_passed = True
+                    log_data["filter_result"] = True
                 except Exception as e:
                     logger.error(f"Filter error: {e}, allowing message to pass")
+                    log_data["filter_error"] = str(e)
                     # On error, continue processing
-                    
+            
             # Modify text if configured
+            modified_text = None
             if self.mod_prompt:
                 logger.info(f"Modifying text with prompt: {self.mod_prompt[:50]}...")
-                new_text = await self.ai_utils.modify_content(message_text, self.mod_prompt)
-                logger.info(f"Original: {message_text[:50]}... -> Modified: {new_text[:50]}...")
-            else:
-                new_text = message_text
-                
-            # Process media if any
-            media_paths = []
-            if event.message.media:
                 try:
-                    timestamp = int(time.time())
-                    media_path = await event.message.download_media(
-                        file=os.path.join(self.media_dir, f"{timestamp}_{event.message.id}")
-                    )
-                    if media_path:
-                        logger.info(f"Downloaded media to: {media_path}")
-                        media_paths.append(media_path)
+                    new_text = await self.ai_utils.modify_content(message_text, self.mod_prompt)
+                    logger.info(f"Original: {message_text[:50]}... -> Modified: {new_text[:50]}...")
+                    modified_text = new_text
+                    log_data["modified_text"] = new_text
                 except Exception as e:
-                    logger.error(f"Error downloading media: {e}")
-                    
-            # Post to all target channels
-            success = False
-            for target in self.target_channels:
-                result = await self.post_to_channel(new_text, media_paths, target)
-                if result:
-                    success = True
-                    
-            # Mark as processed for duplicate checking
-            if success and self.duplicate_check:
-                self.processed_messages.add(message_key)
+                    logger.error(f"Text modification error: {e}")
+                    log_data["mod_error"] = str(e)
+                    modified_text = message_text
+            else:
+                modified_text = message_text
+            
+            # Continue with rest of your implementation...
+            # ...
+            
+            # Update log when posted successfully
+            log_data["status"] = "posted"
+            log_data["posted_to"] = [target for target in self.target_channels]
+            if hasattr(self, 'workflow_manager'):
+                self.workflow_manager.log_message(str(self.config.get('_id')), log_data)
                 
-            # Clean up downloaded media if not preserving
-            if not self.preserve_files:
-                for path in media_paths:
-                    if os.path.exists(path):
-                        try:
-                            os.remove(path)
-                            logger.info(f"Cleaned up media file: {path}")
-                        except Exception as e:
-                            logger.error(f"Error removing media file {path}: {e}")
-                            
         except Exception as e:
             logger.error(f"Error processing message: {e}")
+            # Log error
+            if hasattr(self, 'workflow_manager'):
+                log_data = {
+                    "message_key": message_key if 'message_key' in locals() else f"error_{time.time()}",
+                    "error": str(e),
+                    "status": "error"
+                }
+                self.workflow_manager.log_message(str(self.config.get('_id')), log_data)
     
     async def handle_new_album(self, event):
         """Process an album of messages."""

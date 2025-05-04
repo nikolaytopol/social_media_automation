@@ -64,7 +64,21 @@
                 </ul>
               </td>
               <td class="status-{{ workflow.status }}">{{ workflow.status }}</td>
-              <td>{{ workflow.ai_provider.name }} ({{ workflow.ai_provider.model }})</td>
+              <td>
+                {% if workflow.get('ai_provider') %}
+                  {{ workflow.get('ai_provider').get('name', 'default') }} 
+                  {% if workflow.get('ai_provider').get('model') %}
+                  ({{ workflow.get('ai_provider').get('model') }})
+                  {% endif %}
+                {% elif workflow.ai_provider is defined %}
+                  {{ workflow.ai_provider.name|default('default') }}
+                  {% if workflow.ai_provider.model is defined %}
+                  ({{ workflow.ai_provider.model }})
+                  {% endif %}
+                {% else %}
+                  OpenAI (default)
+                {% endif %}
+              </td>
               <td>
                 {% if workflow.status == 'running' %}
                 <a href="{{ url_for('webapp.stop_workflow', workflow_id=workflow._id) }}" class="btn btn-warning btn-sm">Stop</a>
@@ -73,6 +87,8 @@
                 <a href="{{ url_for('webapp.edit_workflow', workflow_id=workflow._id) }}" class="btn btn-info btn-sm">Edit</a>
                 <a href="{{ url_for('webapp.delete_workflow', workflow_id=workflow._id) }}" class="btn btn-danger btn-sm" onclick="return confirm('Are you sure you want to delete this workflow?')">Delete</a>
                 {% endif %}
+                <a href="{{ url_for('webapp.workflow_messages', workflow_id=workflow._id) }}" 
+                   class="btn btn-info btn-sm">Messages</a>
               </td>
             </tr>
             {% endfor %}

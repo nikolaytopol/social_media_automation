@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Message Feed - {{ workflow.type }} Workflow</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    .message-card {
+      margin-bottom: 15px;
+      border-left: 5px solid #ccc;
+    }
+    .message-filtered { border-left-color: #dc3545; }
+    .message-processed { border-left-color: #28a745; }
+    .message-error { border-left-color: #dc3545; background-color: #f8d7da; }
+    .message-processing { border-left-color: #007bff; }
+    .message-content {
+      white-space: pre-line;
+      font-family: monospace;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    .refresh-btn {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 100;
+    }
+  </style>
+</head>
+<body class="p-4">
+  <div class="container">
+    <h1 class="mb-4">Message Feed: {{ workflow.type|capitalize }} Workflow</h1>
+    
+    <div class="mb-3">
+      <a href="{{ url_for('webapp.list_workflows') }}" class="btn btn-secondary">Back to Workflows</a>
+      {% if workflow.status == 'stopped' %}
+      <a href="{{ url_for('webapp.start_workflow', workflow_id=workflow._id) }}" class="btn btn-success">Start Workflow</a>
+      {% else %}
+      <a href="{{ url_for('webapp.stop_workflow', workflow_id=workflow._id) }}" class="btn btn-warning">Stop Workflow</a>
+      {% endif %}
+      <button id="toggleAutoRefresh" class="btn btn-info">Auto-refresh: OFF</button>
+    </div>
+    
+    <div class="card mb-4">
+      <div class="card-header">
+        <h5 class="card-title mb-0">Workflow Details</h5>
+      </div>
+      <div class="card-body">
+        <div class="row">
+          <div class="col-md-6">
+            <p><strong>ID:</strong> {{ workflow._id }}</p>
+            <p><strong>Type:</strong> {{ workflow.type }}</p>
+            <p><strong>Status:</strong> <span class="badge bg-{{ 'success' if workflow.status == 'running' else 'secondary' }}">{{ workflow.status }}</span></p>
+          </div>
+          <div class="col-md-6">
+            <p><strong>Sources:</strong> 
+              {% for source in workflow.sources %}
+                <span class="badge bg-info">{{ source.name }}</span>
+              {% endfor %}
+            </p>
+            <p><strong>Destinations:</strong> 
+              {% for dest in workflow.destinations %}
+                <span class="badge bg-info">{{ dest.name }}</span>
+              {% endfor %}
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <h2>Recent Messages</h2>
+    <div id="messageContainer">
+      {% if messages %}
+        {% for message in messages %}
+          <div class="card message-card message-{{ message.status }}">
+            <div class="card-header d-flex justify-content-between">
+              <span>{{ message.timestamp|default('') }}</span>
+              <span class="badge bg-{{ 'success' if message.status == 'posted' else ('danger' if message.status == 'error' or message.status == 'filtered_out' else 'primary') }}">
+                {{ message.status|default('unknown')|upper }}
+              </span>
+            </div>
+            <div class="card-body">
+              {% if message.get('original_text') %}
+              <h5 class="card-title">Original Content</h5>
+              <div class="message-content mb-3">{{ message.original_text }}</div>
+              {% endif %}
+              
+              {% if message.get('modified_text') %}
+              <h5 class="card-title">Modified Content</h5>
+              <div class="message-content">{{ message.modified_text }}</div>
+              {% endif %}
+              
+              {% if message.get('error') %}
+              <div class="alert alert-danger">
+                <strong>Error:</strong> {{ message.error }}
+              </div>
+              {% endif %}
+              
+              <div class="mt-2">
+                {% if message.has_media %}<span class="badge bg-secondary">Has Media</span>{% endif %}
+                <small class="text-muted">From: {{ message.source_channel|default('Unknown') }}</small>
+                {% if message.posted_to %}
+                <small class="text-muted">Posted to: 
+                  {% for dest in message.posted_to %}
+                  <span class="badge bg-light text-dark">{{ dest }}</span>
+                  {% endfor %}
+                </small>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      {% else %}
+        <div class="alert alert-info">No messages found for this workflow yet.</div>
+      {% endif %}
+    </div>
+    
+    <button class="btn btn-primary refresh-btn" id="refreshButton">
+      <i class="bi bi-arrow-clockwise"></i> Refresh
+    </button>
+  </div>
+  
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      const messageContainer = document.getElementById('messageContainer');
+      const refreshButton = document.getElementById('refreshButton');
+      const toggleAutoRefreshButton = document.getElementById('toggleAutoRefresh');
+      let lastMessageId = null;
+      let autoRefreshInterval = null;
+      
+      // Get the last message ID
+      const messageCards = document.querySelectorAll('.message-card');
+      if (messageCards.length > 0) {
+        const firstCard = messageCards[0];
+        lastMessageId = firstCard.dataset.id;
+      }
+      
+      // Function to refresh messages
+      function refreshMessages() {
+        fetch(`/api/workflows/messages/{{ workflow._id }}?last_id=${lastMessageId || ''}`)
+          .then(response => response.json())
+          .then(data => {
+            if (data.messages && data.messages.length > 0) {
+              // Update the last message ID
+              lastMessageId = data.messages[0]._id;
+              
+              // Add new messages to the container
+              const fragment = document.createDocumentFragment();
+              data.messages.reverse().forEach(message => {
+                const messageCard = createMessageCard(message);
+                fragment.appendChild(messageCard);
+              });
+              
+              // Insert at the beginning of the container
+              if (messageContainer.firstChild) {
+                messageContainer.insertBefore(fragment, messageContainer.firstChild);
+              } else {
+                messageContainer.appendChild(fragment);
+              }
+              
+              // Remove "no messages" alert if it exists
+              const noMessagesAlert = messageContainer.querySelector('.alert-info');
+              if (noMessagesAlert) {
+                noMessagesAlert.remove();
+              }
+            }
+          })
+          .catch(error => console.error('Error fetching messages:', error));
+      }
+      
+      // Create a message card element from message data
+      function createMessageCard(message) {
+        const card = document.createElement('div');
+        card.className = `card message-card message-${message.status || 'unknown'}`;
+        card.dataset.id = message._id;
+        
+        const statusClass = message.status === 'posted' ? 'success' : 
+                           (message.status === 'error' || message.status === 'filtered_out' ? 'danger' : 'primary');
+        
+        card.innerHTML = `
+          <div class="card-header d-flex justify-content-between">
+            <span>${message.timestamp || ''}</span>
+            <span class="badge bg-${statusClass}">${(message.status || 'unknown').toUpperCase()}</span>
+          </div>
+          <div class="card-body">
+            ${message.original_text ? `
+              <h5 class="card-title">Original Content</h5>
+              <div class="message-content mb-3">${message.original_text}</div>
+            ` : ''}
+            ${message.modified_text ? `
+              <h5 class="card-title">Modified Content</h5>
+              <div class="message-content">${message.modified_text}</div>
+            ` : ''}
+            ${message.error ? `
+              <div class="alert alert-danger">
+                <strong>Error:</strong> ${message.error}
+              </div>
+            ` : ''}
+            <div class="mt-2">
+              ${message.has_media ? '<span class="badge bg-secondary">Has Media</span>' : ''}
+              <small class="text-muted">From: ${message.source_channel || 'Unknown'}</small>
+              ${message.posted_to ? `
+                <small class="text-muted">Posted to: 
+                  ${message.posted_to.map(dest => `<span class="badge bg-light text-dark">${dest}</span>`).join(' ')}
+                </small>
+              ` : ''}
+            </div>
+          </div>
+        `;
+        
+        return card;
+      }
+      
+      // Add click event to refresh button
+      refreshButton.addEventListener('click', refreshMessages);
+      
+      // Toggle auto-refresh
+      toggleAutoRefreshButton.addEventListener('click', function() {
+        if (autoRefreshInterval) {
+          clearInterval(autoRefreshInterval);
+          autoRefreshInterval = null;
+          this.textContent = 'Auto-refresh: OFF';
+          this.classList.remove('btn-success');
+          this.classList.add('btn-info');
+        } else {
+          autoRefreshInterval = setInterval(refreshMessages, 5000); // Refresh every 5 seconds
+          this.textContent = 'Auto-refresh: ON';
+          this.classList.remove('btn-info');
+          this.classList.add('btn-success');
+        }
+      });
+    });
+  </script>
+</body>
+</html>

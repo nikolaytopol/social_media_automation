@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Configure {{ preset.name }}</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="p-4">
+  <div class="container">
+    <h1 class="mb-4">Configure Preset: {{ preset.name }}</h1>
+    <p class="lead">{{ preset.description }}</p>
+    
+    <div class="mb-3">
+      <a href="{{ url_for('webapp.list_workflow_presets') }}" class="btn btn-secondary">Back to Presets</a>
+    </div>
+    
+    <div class="card">
+      <div class="card-body">
+        <form method="POST">
+          <!-- Required Fields -->
+          {% for field in preset.required_fields %}
+          <div class="mb-3">
+            <label for="{{ field.name }}" class="form-label">{{ field.label }}:</label>
+            
+            {% if field.type == 'text' %}
+            <textarea id="{{ field.name }}" name="{{ field.name }}" class="form-control" rows="3" 
+                     {% if not field.get('required', True) is sameas false %}required{% endif %}></textarea>
+            {% elif field.type == 'boolean' %}
+            <div class="form-check">
+              <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" class="form-check-input">
+              <label for="{{ field.name }}" class="form-check-label">{{ field.label }}</label>
+            </div>
+            {% else %}
+            <input type="{{ field.type if field.type in ['date', 'datetime-local', 'email', 'number'] else 'text' }}" 
+                   id="{{ field.name }}" name="{{ field.name }}" class="form-control"
+                   {% if not field.get('required', True) is sameas false %}required{% endif %}>
+            {% endif %}
+            
+            {% if field.get('description') %}
+            <small class="form-text text-muted">{{ field.description }}</small>
+            {% endif %}
+          </div>
+          {% endfor %}
+          
+          <!-- Optional Fields -->
+          {% if preset.optional_fields %}
+          <h5 class="mt-4 mb-3">Optional Settings</h5>
+          {% for field in preset.optional_fields %}
+          <div class="mb-3">
+            {% if field.type == 'boolean' %}
+            <div class="form-check">
+              <input type="checkbox" id="{{ field.name }}" name="{{ field.name }}" class="form-check-input"
+                    {% if field.get('default', False) %}checked{% endif %}>
+              <label for="{{ field.name }}" class="form-check-label">{{ field.label }}</label>
+            </div>
+            {% else %}
+            <label for="{{ field.name }}" class="form-label">{{ field.label }}:</label>
+            
+            {% if field.type == 'text' %}
+            <textarea id="{{ field.name }}" name="{{ field.name }}" class="form-control" rows="3"></textarea>
+            {% else %}
+            <input type="{{ field.type if field.type in ['date', 'datetime-local', 'email', 'number'] else 'text' }}" 
+                   id="{{ field.name }}" name="{{ field.name }}" class="form-control"
+                   value="{{ field.get('default', '') }}">
+            {% endif %}
+            {% endif %}
+            
+            {% if field.get('description') %}
+            <small class="form-text text-muted">{{ field.description }}</small>
+            {% endif %}
+          </div>
+          {% endfor %}
+          {% endif %}
+          
+          <!-- AI Provider Selection -->
+          <div class="mb-3">
+            <label for="ai_provider" class="form-label">AI Provider:</label>
+            <select id="ai_provider" name="ai_provider" class="form-select">
+              {% for provider in ['openai', 'deepseek'] %}
+              <option value="{{ provider }}">{{ provider|capitalize }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          
+          <div class="mb-3 form-check">
+            <input type="checkbox" id="start_immediately" name="start_immediately" class="form-check-input" checked>
+            <label for="start_immediately" class="form-check-label">Start Workflow Immediately</label>
+          </div>
+          
+          <button type="submit" class="btn btn-primary">Create Workflow</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
