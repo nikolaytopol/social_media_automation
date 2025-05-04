@@ -71,6 +71,12 @@ def start_workflow(workflow_id):
         flash(f"Error starting workflow: {str(e)}", "error")
     return redirect(url_for('webapp.list_workflows'))
 
+@webapp.route('/workflows/start', methods=['GET'])
+def start_workflow_form():
+    """Display form to start a new workflow."""
+    workflows = workflow_manager.list_workflows()
+    return render_template('start_workflow_form.html', workflows=workflows)
+
 @webapp.route('/workflows/stop/<workflow_id>')
 def stop_workflow(workflow_id):
     """Stop a specific workflow."""
@@ -129,3 +135,9 @@ def edit_workflow(workflow_id):
         return redirect(url_for('webapp.list_workflows'))
     
     return render_template("edit_workflow.html", workflow=workflow)
+
+@webapp.route('/accounts/')
+def manage_accounts():
+    """Manage social media accounts."""
+    # This would be where you'd show accounts, add new ones, etc.
+    return render_template('accounts.html')
