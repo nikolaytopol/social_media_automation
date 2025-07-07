@@ -1,0 +1,15 @@
+# Ignore per-workflow state folders
+**/message_history/
+**/posted_messages/
+**/retraining/
+**/logs/
+
+# Ignore Python byte-code caches
+**/__pycache__/
+
+# Ignore environment files
+*.env
+
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store

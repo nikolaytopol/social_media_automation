@@ -1,0 +1,1 @@
+{"silicon_echo": {"name": "silicon_echo", "status": "running", "start_time": "2025-07-07T12:49:22.105735", "error": null, "restart_count": 0, "last_restart": null, "last_error_scan": null}, "trade_ducky": {"name": "trade_ducky", "status": "stopped", "start_time": null, "error": null, "restart_count": 0, "last_restart": null, "last_error_scan": null}}
