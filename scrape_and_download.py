@@ -200,7 +200,7 @@ def scrape_and_download(url, download_folder="downloaded_media"):
 # New Function: Extract Content to Aggregated File
 ###############################
 
-async def extract_content_to_aggregated_file(text, media_paths, dir_name,analyze_urls=False):
+async def extract_content_to_aggregated_file(text, media_paths, dir_name, analyze_urls=False, analyze_images=False):
     """
     Extract and combine content from original message, media files, and URLs into a single aggregated file.
     
@@ -208,13 +208,15 @@ async def extract_content_to_aggregated_file(text, media_paths, dir_name,analyze
         text (str): The original message text
         media_paths (list): List of paths to media files
         dir_name (str): Directory where the tweet data is stored
+        analyze_urls (bool): Whether to analyze URLs found in the text
+        analyze_images (bool): Whether to analyze images for content description
     Returns:
         str: The aggregated content as a string
         
     This function:
     1. Creates a "full_input_to_gpt.txt" file in the specified directory
     2. Adds the original message text
-    3. Analyzes and adds descriptions of any media files (images, audio)
+    3. Analyzes and adds descriptions of any media files (images, audio) if analyze_images=True
     4. Finds and analyzes URLs in the original message (ignoring certain promotional URLs)
     5. Returns the complete aggregated content for further processing
     """
@@ -236,7 +238,7 @@ async def extract_content_to_aggregated_file(text, media_paths, dir_name,analyze
                 original_content = text
 
             # Process attached media files.
-            logger.info(f"Processing {len(media_paths)} media files")
+            logger.info(f"Processing {len(media_paths)} media files (analyze_images={analyze_images})")
             if media_paths:
                 import mimetypes
                 for media in media_paths:
@@ -245,16 +247,24 @@ async def extract_content_to_aggregated_file(text, media_paths, dir_name,analyze
                     
                     try:
                         if mime_type:
-                            if mime_type.startswith("image/"):
+                            if mime_type.startswith("image/") and analyze_images:
                                 media_analysis = await analyze_image(media)
                             elif mime_type.startswith("audio/"):
                                 media_analysis = analyze_audi(media)
                             else:
-                                media_analysis = (f"Media file {os.path.basename(media)} of type '{mime_type}' "
-                                                f"is attached and will be reposted with the processed text.")
+                                if analyze_images:
+                                    media_analysis = (f"Media file {os.path.basename(media)} of type '{mime_type}' "
+                                                    f"is attached and will be reposted with the processed text.")
+                                else:
+                                    media_analysis = (f"Media file {os.path.basename(media)} of type '{mime_type}' "
+                                                    f"is attached (analysis disabled).")
                         else:
-                            media_analysis = (f"Media file {os.path.basename(media)} (unknown type) "
-                                            f"is attached and will be reposted with the processed text.")
+                            if analyze_images:
+                                media_analysis = (f"Media file {os.path.basename(media)} (unknown type) "
+                                                f"is attached and will be reposted with the processed text.")
+                            else:
+                                media_analysis = (f"Media file {os.path.basename(media)} (unknown type) "
+                                                f"is attached (analysis disabled).")
                     except Exception as e:
                         logger.error(f"Error analyzing media {media}: {e}")
                         logger.error(traceback.format_exc())

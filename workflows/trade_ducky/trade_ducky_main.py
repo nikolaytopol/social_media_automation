@@ -19,18 +19,19 @@ from difflib import SequenceMatcher
 from collections import defaultdict  # Add this line
 from pathlib import Path
 from dotenv import load_dotenv  # Add dotenv import
-# Add the project root directory to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+import glob
+
+# First add the project root directory to Python path (before imports)
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-print("Python path:", sys.path)
-print("Current working directory:", os.getcwd())
-print("Project root:", project_root)
 
-from models_openai import tweet_generation, filter_model, duplicate_checker,analyze_image
+# Now you can import from the root directory
+from scrape_and_download import scrape_and_download, extract_content_to_aggregated_file,analyze_website
+from models_openai import tweet_generation, filter_model, duplicate_checker,analyze_image 
 from helpers import download_and_process_media,setup_error_handlers,cleanup_temporary_files
-from scrape_and_download import scrape_and_download, extract_content_to_aggregated_file
+from telegram import setup_monitored_channels,post_to_telegram_channel
 # Ensure we're using the system's logging module 
 import importlib.util
 logging_spec = importlib.util.find_spec('logging')
@@ -50,6 +51,8 @@ from telethon.sessions import StringSession
 # At the very top of the file, after imports
 import logging
 from pathlib import Path
+from duplicate_checker import fetch_posted_tweet_history,is_duplicate_tweet
+from twitter import post_to_twitter
 
 # Base directory constants
 WORKFLOW_DIR = Path(os.path.dirname(os.path.abspath(__file__)))
@@ -59,16 +62,17 @@ BASE_DIR = WORKFLOW_DIR.parent.parent  # Social_Media_CURSOR_2 root directory
 MESSAGE_HISTORY_DIR = WORKFLOW_DIR / "message_history"
 POSTED_MESSAGES_DIR = WORKFLOW_DIR / "posted_messages"
 LOGS_DIR = WORKFLOW_DIR / "logs"
+BOT_NAME="trade_ducky_bot"
 
 # Ensure required directories exist
 for directory in [MESSAGE_HISTORY_DIR, POSTED_MESSAGES_DIR, LOGS_DIR]:
     directory.mkdir(exist_ok=True)
 
 # Configure logging with absolute paths
-logger = logging.getLogger("trade_ducky_bot")
+logger = logging.getLogger(BOT_NAME)
 logger.setLevel(logging.INFO)
 
-log_file = LOGS_DIR / f"trade_ducky_{datetime.datetime.now().strftime('%Y%m%d')}.log"
+log_file = LOGS_DIR / f"{BOT_NAME}_{datetime.datetime.now().strftime('%Y%m%d')}.log"
 file_handler = RotatingFileHandler(
     str(log_file),  # Convert Path to string for handler
     maxBytes=10*1024*1024,
@@ -91,7 +95,7 @@ logger.addHandler(console_handler)
 # Prevent logging from propagating to the root logger
 logger.propagate = False
 
-logger.info(f"Starting trade_ducky bot with logging to {log_file}")
+logger.info(f"Starting {BOT_NAME} bot with logging to {log_file}")
 
 # Load environment variables from .env file in workflow directory
 WORKFLOW_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -169,6 +173,14 @@ group_processing_start_times = {}  # to track when processing started
 # Set a timeout limit for group processing (in seconds)
 GROUP_PROCESSING_TIMEOUT = 300  # 5 minutes
 
+# At the top of the file, after imports, define channels in one place
+CHANNELS_TO_MONITOR = [
+        '@forklog', '@unfolded', '@unfolded_defi', '@decenter', 
+        '@tradeduckydemo', '@cryptoquant_official', '@cryptodaily', '@glassnode',
+        '@crypto02eth', '@RBCCrypto', '@crypto_headlines', '@decryptnews', '@incrypted','@whale_talks',-1002837549832,
+        '@binancesignals','@wallstreetqueenofficial','@FedRussianInsiders'
+    ]
+
 # Add a watchdog task that checks for stuck processes
 async def watchdog_task():
     """Monitor for stuck processes and log/clean up if necessary"""
@@ -240,10 +252,16 @@ async def process_group_with_timeout(group_id):
         if group_id in group_processing_start_times:
             del group_processing_start_times[group_id]
 
-@client.on(events.NewMessage(chats=['@forklog','@unfolded','@unfolded_defi', '@decenter', '@tradeduckydemo', '@cryptoquant_official',"@cryptodaily","@glassnode",
-                                     "@crypto02eth","@RBCCrypto","@crypto_headlines","@decryptnews","@incrypted","@whaletalks",-1002837549832]))
+@client.on(events.NewMessage(chats=CHANNELS_TO_MONITOR))
 async def handler(event):
     logger.info(f"New message received from {event.chat.username if hasattr(event.chat, 'username') else 'unknown chat'}")
+    
+    # Add debugging to see message content
+    message_text = event.message.text if event.message.text else ""
+    message_preview = message_text[:15] + "..." if len(message_text) > 15 else message_text
+    logger.info(f"Message preview (first 15 chars): '{message_preview}'")
+    logger.info(f"Message has media: {event.message.media is not None}")
+    logger.info(f"Message text length: {len(message_text)}")
     
     try:
         message = event.message
@@ -295,12 +313,29 @@ async def process_group_id(grouped_id):
         media_paths = []
         text = earliest_message.text if earliest_message.text else ""
 
+        # Add debugging for text content
+        logger.info(f"Processing message text: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+        logger.info(f"Text length: {len(text)}")
+        logger.info(f"Text is empty: {not text or len(text.strip()) == 0}")
+
         # Download media files
         for idx, msg in enumerate(messages):
             if msg.media:
-                media_path = await download_and_process_media(msg, message_dir, idx)
-                if media_path:
-                    media_paths.append(media_path)
+                try:
+                    logger.info(f"Downloading media for message ID {msg.id}")
+                    media = await msg.download_media()
+                    if media:
+                        file_ext = os.path.splitext(media)[1]
+                        msg_time = msg.date.strftime("%H%M%S")
+                        new_filename = f"{msg_time}_{idx}{file_ext}"
+                        new_path = message_dir / new_filename
+                        shutil.move(media, str(new_path))
+                        media_paths.append(str(new_path))
+                        logger.info(f"Media downloaded and moved to: {new_path}")
+                    else:
+                        logger.warning(f"Media download returned None for message ID {msg.id}")
+                except Exception as e:
+                    logger.error(f"Error downloading media: {e}")
             else:
                 logger.info(f"Message ID {msg.id} has no media")
                 
@@ -330,331 +365,6 @@ async def process_group_id(grouped_id):
             group_processing.remove(grouped_id)
 
 ###############################
-# URL and Media Analysis Helpers
-###############################
-
-def analyze_website(url, download_folder=None):
-    logger.info(f"Analyzing website: {url}")
-    try:
-        if download_folder:
-            result = scrape_and_download(url, download_folder=download_folder)
-        else:
-            result = scrape_and_download(url)
-        logger.info(f"Website analysis completed for {url}")
-        return result
-    except Exception as e:
-        logger.error(f"Error analyzing website {url}: {e}")
-        logger.error(traceback.format_exc())
-        return f"Error analyzing website {url}: {e}"
-
-def encode_image(image_path):
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode("utf-8")
-
-###############################
-# Duplicate Tweet Prevention Helpers
-###############################
-
-def fetch_posted_tweet_history(limit=25):
-    """
-    Fetch history from posted_messages directory using absolute paths.
-    """
-    logger.info(f"Fetching posted message history (limit: {limit})")
-    
-    if not POSTED_MESSAGES_DIR.exists():
-        logger.warning(f"Posted messages directory '{POSTED_MESSAGES_DIR}' does not exist")
-        return []
-    
-    try:
-        # Get directories sorted by modification time
-        message_dirs = sorted(
-            [d for d in POSTED_MESSAGES_DIR.iterdir() if d.is_dir()],
-            key=lambda x: x.stat().st_mtime,
-            reverse=True
-        )[:limit]
-        
-        history = []
-        for message_dir in message_dirs:
-            try:
-                tweet_text_file = message_dir / "tweet_text.txt"
-                if not tweet_text_file.exists():
-                    continue
-                
-                with open(tweet_text_file, "r", encoding="utf-8") as f:
-                    message_text = f.read().strip()
-                
-                # Get media info
-                media_info = []
-                for file_path in message_dir.glob('*'):
-                    if file_path.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.mp4'):
-                        media_info.append({
-                            "file_extension": file_path.suffix,
-                            "file_size": file_path.stat().st_size
-                        })
-                
-                history.append({
-                    "text": message_text,
-                    "media_info": media_info,
-                    "directory": str(message_dir)
-                })
-                
-            except Exception as e:
-                logger.error(f"Error processing directory {message_dir}: {e}")
-                continue
-        
-        return history
-        
-    except Exception as e:
-        logger.error(f"Error fetching history: {e}")
-        return []
-
-def normalized_media_info(media_info):
-    """
-    Returns a sorted list of tuples (file_extension, file_size) for each media file.
-    """
-    if not media_info:
-        return []
-    normalized = [(item["file_extension"].lower(), item["file_size"]) for item in media_info]
-    normalized.sort()
-    return normalized
-
-def media_file_equal(m1, m2, tolerance=0.05):
-    """
-    Compares two media file tuples (file_extension, file_size).
-    """
-    ext1, size1 = m1
-    ext2, size2 = m2
-    if ext1 != ext2:
-        return False
-    # Avoid division by zero and allow exact zero-size files.
-    if size1 == 0 and size2 == 0:
-        return True
-    # Check if the relative difference is within the tolerance.
-    diff_ratio = abs(size1 - size2) / max(size1, size2)
-    return diff_ratio <= tolerance
-
-def media_list_equal(list1, list2, tolerance=0.05):
-    """
-    Compares two lists of media file tuples.
-    """
-    if len(list1) != len(list2):
-        return False
-    for m1, m2 in zip(list1, list2):
-        if not media_file_equal(m1, m2, tolerance):
-            return False
-    return True
-
-def format_media_info(media_info):
-    """
-    Given a list of media file info dictionaries, returns a string summarizing the details.
-    """
-    if not media_info:
-        return "No media files."
-    
-    formatted_items = []
-    for item in media_info:
-        formatted_items.append(
-            f"(Extension: {item['file_extension']}, Size: {item['file_size']} bytes)"
-        )
-    return ", ".join(formatted_items)
-
-async def is_duplicate_tweet(current_message, current_media_info, dir_path):
-    """
-    Comprehensive duplicate check combining both non-AI and AI-based methods.
-    
-    Args:
-        current_message (str): The message to check
-        current_media_info (list): List of media file information
-        dir_path (Path): Directory path for saving model decisions
-        
-    Returns:
-        bool: True if duplicate detected, False otherwise
-    """
-    logger.info("Starting comprehensive duplicate check")
-    
-    # Get only successfully posted tweets
-    recent_entries = fetch_posted_tweet_history(limit=25)
-    if not recent_entries:
-        logger.info("No posted entries to compare against")
-        return False
-
-    # Debug logging - show what we're comparing
-    current_media_str = format_media_info(current_media_info)
-    logger.debug(f"Current message (first 50 chars): {current_message[:50] if current_message else ''}")
-    logger.debug(f"Current media: {current_media_str}")
-    
-    # 1. Quick checks first (non-AI based)
-    
-    # 1.1 Media match check
-    normalized_current = normalized_media_info(current_media_info)
-    for i, entry in enumerate(recent_entries):
-        normalized_past = normalized_media_info(entry["media_info"])
-        if media_list_equal(normalized_current, normalized_past, tolerance=0.01):
-            # Enhanced logging - show exactly which tweet matched
-            match_dir = os.path.basename(entry["directory"])
-            match_text = entry["text"][:50] + "..." if len(entry["text"]) > 50 else entry["text"]
-            logger.warning(f"DUPLICATE DETECTED (Media Match): Files match with tweet in: {match_dir}")
-            logger.warning(f"Media match details: Current files: {len(normalized_current)}, Past files: {len(normalized_past)}")
-            logger.warning(f"Matched tweet text begins with: '{match_text}'")
-            return True
-    
-    # 1.2 Text-based exact matches
-    for i, entry in enumerate(recent_entries):
-        past_text = entry["text"].strip()
-        # Only check substantial messages
-        if len(current_message) > 20 and len(past_text) > 20:
-            # Exact match check
-            if current_message.strip() == past_text:
-                match_dir = os.path.basename(entry["directory"])
-                logger.warning(f"DUPLICATE DETECTED (Exact Text): Match found in: {match_dir}")
-                logger.warning(f"Current text: '{current_message[:50]}...'")
-                logger.warning(f"Matched text: '{past_text[:50]}...'")
-                return True
-            
-            # Beginning of message match (for very similar messages)
-            if (current_message[:30].lower() == past_text[:30].lower() and 
-                abs(len(past_text) - len(current_message)) < 10):
-                match_dir = os.path.basename(entry["directory"])
-                logger.warning(f"DUPLICATE DETECTED: Text beginning matches with tweet in: {match_dir}")
-                logger.warning(f"First 30 chars match: '{current_message[:30]}'")
-                return True
-    
-    # 2. AI-based semantic check
-    try:
-        # Prepare prompt for duplicate checking
-        duplicate_prompt = (
-            "Compare the new message with past messages and determine if it's a duplicate.\n"
-            "Consider both content similarity and meaning.\n"
-            "NEW MESSAGE:\n-------------------\n"
-            f"{current_message}\n"
-            "-------------------\n\n"
-            "PAST MESSAGES:\n"
-        )
-        
-        for i, entry in enumerate(recent_entries, start=1):
-            duplicate_prompt += f"[{i}] {entry['text'][:100]}{'...' if len(entry['text']) > 100 else ''}\n\n"
-        
-        is_duplicate = await duplicate_checker(
-            current_message=current_message,
-            current_media_info=current_media_info,
-            recent_entries=recent_entries,
-            prompt_text=duplicate_prompt,
-            model="gpt-4o-2024-11-20",
-            system_content="You are a duplicate content detector. If content is not duplicate, respond with 'No'. If duplicate, respond with 'Yes, similar to message #X' where X is the message number.",
-            temperature=0.0,
-            max_tokens=50,
-            save_decision=True,
-            directory_prefix=str(dir_path)
-        )
-        
-        if is_duplicate:
-            logger.warning("DUPLICATE DETECTED (AI Analysis): Semantic similarity found")
-            return True
-            
-    except Exception as e:
-        logger.error(f"Error in AI-based duplicate check: {e}")
-        logger.error(traceback.format_exc())
-        logger.warning("AI check failed - relying on non-AI checks only")
-    
-    logger.info("No duplicates found - message appears to be unique")
-    return False
-
-###############################
-# New Function: Post to Telegram Channel
-###############################
-
-async def post_to_telegram_channel(text, media_paths, channel_username):
-    """
-    Posts the given text (and optionally media) to the specified Telegram channel.
-    """
-    logger.info(f"Posting to Telegram channel: {channel_username}")
-    try:
-        if media_paths:
-            await client.send_file(channel_username, media_paths, caption=text)
-        else:
-            await client.send_message(channel_username, text)
-        logger.info(f"Successfully posted to Telegram channel: {channel_username}")
-    except Exception as e:
-        logger.error(f"Error posting to Telegram channel {channel_username}: {e}")
-        logger.error(traceback.format_exc())
-
-###############################
-# New Function: Post to Twitter
-###############################
-
-async def post_to_twitter(text, media_paths=None):
-    """Post a tweet with media to Twitter with better error handling"""
-    try:
-        logger.info(f"Posting to Twitter: {text[:50]}... with {len(media_paths) if media_paths else 0} media items")
-        
-        # Check credentials
-        if not all([API_KEY, API_SECRET_KEY, ACCESS_TOKEN, ACCESS_TOKEN_SECRET]):
-            logger.error("Twitter credentials missing. Cannot post to Twitter.")
-            return None
-        
-        # Check media paths
-        if media_paths and not all(os.path.exists(path) for path in media_paths):
-            invalid_paths = [path for path in media_paths if not os.path.exists(path)]
-            logger.error(f"Some media paths don't exist: {invalid_paths}")
-            # Continue with valid paths only
-            media_paths = [path for path in media_paths if os.path.exists(path)]
-        
-        # Upload media
-        media_ids = []
-        if media_paths:
-            for media_path in media_paths:
-                try:
-                    # Log file info for debugging
-                    file_size = os.path.getsize(media_path)
-                    file_type = mimetypes.guess_type(media_path)[0]
-                    logger.info(f"Uploading media: {os.path.basename(media_path)}, size: {file_size}, type: {file_type}")
-                    
-                    # Using tweepy's v1 API for media uploads
-                    with open(media_path, 'rb') as media_file:
-                        # Add explicit mime type and more verbose logging
-                        media = api_v1.media_upload(
-                            filename=os.path.basename(media_path),
-                            file=media_file,
-                        )
-                        media_ids.append(media.media_id)
-                    logger.info(f"Media uploaded successfully with ID: {media.media_id}")
-                except Exception as e:
-                    logger.error(f"Error uploading media {media_path}: {e}")
-                    logger.error(traceback.format_exc())
-                    # Continue with other media files
-        
-        # Post the tweet
-        if media_ids:
-            logger.info(f"Posting tweet with {len(media_ids)} media attachments")
-            response = client_v2.create_tweet(text=text, media_ids=media_ids)
-        else:
-            logger.info("Posting text-only tweet")
-            response = client_v2.create_tweet(text=text)
-        
-        tweet_id = response.data['id']
-        logger.info(f"Tweet posted successfully with ID: {tweet_id}")
-        return tweet_id
-    
-    except tweepy.errors.BadRequest as e:
-        logger.error(f"Twitter BadRequest error: {e}")
-        error_detail = getattr(e, 'api_errors', [{}])[0].get('message', str(e))
-        logger.error(f"Error details: {error_detail}")
-        return None
-    except tweepy.errors.Unauthorized as e:
-        logger.error(f"Twitter authentication error: {e}")
-        logger.error("Check your Twitter API credentials")
-        return None
-    except tweepy.errors.TooManyRequests as e:
-        logger.error(f"Twitter rate limit exceeded: {e}")
-        reset_time = e.response.headers.get('x-rate-limit-reset', 'unknown')
-        logger.error(f"Rate limit resets at: {reset_time}")
-        return None
-    except Exception as e:
-        logger.error(f"Unexpected error posting to Twitter: {e}")
-        logger.error(traceback.format_exc())
-        return None
-
-###############################
 # Main Function: Generate and Post Tweet
 ###############################
 
@@ -662,26 +372,47 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
     """
     Aggregates data, generates tweet content with GPT, checks for duplicate content,
     and then posts the tweet (and optionally posts to Telegram).
+
+    The function should work as follows:
+    1. Check for duplicates using unified approach (Optionally need it will need to set the folder with messages - and messages lookback )
+    2. Filter for unwanted content (It will require to set filtering prompt )
+    2. Aggegate content before generating tweet content using OpenAI
+    3. Generate tweet content using OpenAI
+    4. Post the tweet if it passed all checks to all social networks and acount which were specified for posting ()
+    7. Save the posting status
     """
     dir_path = Path(dir_name)  # Convert to Path object for consistent handling
     logger.info(f"Beginning generation and posting of the tweet from directory: {dir_path}")
     logger.debug(f"Original message: {text}")
-    logger.debug(f"Media paths: {media_paths}")
+    logger.info(f"Media paths: {media_paths}")
 
+    logger.info(f"Beginning to extract content to aggregated file")
     # 1. First extract content to aggregated file
-    aggregated_content = await extract_content_to_aggregated_file(text, media_paths, str(dir_path))
-    
+    aggregated_content = await extract_content_to_aggregated_file(text, media_paths, str(dir_path),analyze_urls=False)
+    logger.info(f"Content extracted to aggregated file")
+
+    logger.info(f"Beginning to check for duplicates")
     # 2. Check for duplicates using unified approach
     try:
         # Build a list of current media file details in the same format as expected.
         current_media_details = []
         for media in media_paths:
-            file_ext = os.path.splitext(media)[1]
-            file_size = os.path.getsize(media)
-            current_media_details.append({
-                "file_extension": file_ext,
-                "file_size": file_size
-            })
+            # Check if file exists before getting size
+            if os.path.exists(media):
+                file_ext = os.path.splitext(media)[1]
+                file_size = os.path.getsize(media)
+                current_media_details.append({
+                    "file_extension": file_ext,
+                    "file_size": file_size
+                })
+            else:
+                logger.warning(f"Media file not found during duplicate check: {media}")
+                # Still add entry with 0 size to avoid breaking the check
+                file_ext = os.path.splitext(media)[1]
+                current_media_details.append({
+                    "file_extension": file_ext,
+                    "file_size": 0
+                })
         
         is_duplicate = await is_duplicate_tweet(
             current_message=text,
@@ -691,11 +422,56 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
         
         if is_duplicate:
             logger.warning("Tweet is similar to a recent message. Skipping posting to avoid duplicates.")
+            # Save duplicate check decision
+            try:
+                duplicate_decision = {
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "is_duplicate": True,
+                    "reason": "Tweet is similar to a recent message",
+                    "current_message_preview": text[:100] + "..." if len(text) > 100 else text,
+                    "media_count": len(current_media_details)
+                }
+                decision_file = os.path.join(dir_name, "duplicate_check_decision.json")
+                with open(decision_file, "w", encoding="utf-8") as f:
+                    json.dump(duplicate_decision, f, indent=2)
+                logger.info(f"Duplicate check decision saved to {decision_file}")
+            except Exception as e:
+                logger.error(f"Error saving duplicate check decision: {e}")
             return
+        else:
+            # Save success decision when no duplicates found
+            try:
+                success_decision = {
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "is_duplicate": False,
+                    "reason": "No duplicates found - message appears to be unique",
+                    "current_message_preview": text[:100] + "..." if len(text) > 100 else text,
+                    "media_count": len(current_media_details)
+                }
+                decision_file = os.path.join(dir_name, "duplicate_check_decision.json")
+                with open(decision_file, "w", encoding="utf-8") as f:
+                    json.dump(success_decision, f, indent=2)
+                logger.info(f"Duplicate check decision saved to {decision_file}")
+            except Exception as e:
+                logger.error(f"Error saving duplicate check success decision: {e}")
             
     except Exception as e:
         logger.error(f"Error checking for duplicate tweets: {e}")
         logger.error(traceback.format_exc())
+        # Save error decision
+        try:
+            error_decision = {
+                "timestamp": datetime.datetime.utcnow().isoformat(),
+                "is_duplicate": False,
+                "error": str(e),
+                "error_type": "duplicate_check_failed"
+            }
+            decision_file = os.path.join(dir_name, "duplicate_check_decision.json")
+            with open(decision_file, "w", encoding="utf-8") as f:
+                json.dump(error_decision, f, indent=2)
+            logger.info(f"Duplicate check error decision saved to {decision_file}")
+        except Exception as save_error:
+            logger.error(f"Error saving duplicate check error decision: {save_error}")
         # Continue with posting even if duplicate check fails
 
     # 3. Filter for unwanted content
@@ -705,7 +481,7 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
         "If the content is purely promotional with no value, respond with 'Yes, Promotional: [explanation]'\n"
         "If the content contains valuable information (even with some promotional elements), respond with 'No'.\n\n"
         "IMPORTANT GUIDELINES:\n"
-        f"1. Content from our monitored channels ({', '.join(all_channels)}) should NOT be considered promotional\n"
+        f"1. Content from our monitored channels ({', '.join(str(ch) for ch in CHANNELS_TO_MONITOR)}) should NOT be considered promotional\n"
         "2. The following combinations are NOT promotional:\n"
         "   - Market analysis + trading platform links (Bybit, OKX, etc.)\n"
         "   - Price predictions + affiliate/referral links\n"
@@ -746,18 +522,18 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
     )
 
     if filter_result == "yes":
-        logger.warning("Tweet identified as promotional or Russian. Skipping posting...")
+        logger.warning("Tweet identified as promotional. Skipping posting...")
         return
 
     # 4. Generate tweet content
     logger.info("Generating tweet content using OpenAI")
-    logger.info(f"All twitter channels: {all_channels}")
+    logger.info(f"All twitter channels: {CHANNELS_TO_MONITOR}")
     prompt_text = (
         "Rewrite the following content as an engaging Twitter post. "
         "Note that the text is from the Original Message section, with helpful details in image analysis sections.\n\n"
         "IMPORTANT RULES:\n"
-        f"1. REMOVE all Telegram channel mentions ({', '.join(all_channels)})\n"
-        "2. KEEP essential information about the subject (TRON, Ethereum, USDT, etc.)\n"
+        f"1. REMOVE all Telegram channel mentions ({', '.join(str(ch) for ch in CHANNELS_TO_MONITOR)})\n"
+        "2. KEEP essential information about the subject\n"
         "3. REMOVE dashboard links but KEEP the insight from the data\n"
         "4. Add relevant emojis for engagement\n\n"
         "Content: {content}"
@@ -792,49 +568,53 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
     # 5. Post the tweet if it passed all checks
     if filter_result == "no":
         logger.info("Tweet passed all checks. Proceeding to post.")
-        
-        # Upload media if available.
-        media_ids = []
-        for path in media_paths:
-            try:
-                media = api_v1.media_upload(path)
-                media_ids.append(media.media_id)
-                logger.info(f"Media uploaded: {media.media_id}")
-            except Exception as e:
-                logger.error(f"Error uploading media: {e}")
-                logger.error(traceback.format_exc())
-        
-        # Post the tweet
-        tweet_id = None
+
+        # Post the tweet using the modularized function
+        tweet_result = post_to_twitter(
+            text=tweet_text,
+            media_paths=media_paths,
+            client_v2=client_v2,
+            api_v1=api_v1,
+            logger=logger
+        )
         posting_status = {
             "telegram_posted": False,
             "twitter_posted": False,
             "timestamp": datetime.datetime.utcnow().isoformat(),
         }
-
-        try:
-            if media_ids:
-                response = client_v2.create_tweet(text=tweet_text, media_ids=media_ids)
-                tweet_id = response.data['id']
-                logger.info(f"Tweet with media posted successfully: {tweet_id}")
-                posting_status["twitter_posted"] = True
-                posting_status["twitter_id"] = tweet_id
-            else:
-                response = client_v2.create_tweet(text=tweet_text)
-                tweet_id = response.data['id']
-                logger.info(f"Tweet posted successfully: {tweet_id}")
-                posting_status["twitter_posted"] = True
-                posting_status["twitter_id"] = tweet_id
-        except Exception as e:
-            logger.error(f"Error posting tweet: {e}")
-            logger.error(traceback.format_exc())
-            posting_status["twitter_error"] = str(e)
+        
+        # Handle the new return format from post_to_twitter
+        if isinstance(tweet_result, dict) and "error" in tweet_result:
+            # Error occurred
+            posting_status["twitter_error"] = tweet_result["error"]
+            posting_status["twitter_error_type"] = tweet_result["error_type"]
+            if "reset_time" in tweet_result:
+                posting_status["twitter_rate_limit_reset"] = tweet_result["reset_time"]
+                # Add human-readable date
+                try:
+                    ts = int(tweet_result["reset_time"])
+                    posting_status["twitter_rate_limit_reset_utc"] = datetime.datetime.utcfromtimestamp(ts).strftime('%Y-%m-%d %H:%M:%S UTC')
+                except Exception as e:
+                    posting_status["twitter_rate_limit_reset_utc"] = f"Invalid timestamp: {tweet_result['reset_time']}"
+        elif isinstance(tweet_result, str):
+            # Success - tweet_id returned as string
+            posting_status["twitter_posted"] = True
+            posting_status["twitter_id"] = tweet_result
+        elif tweet_result is None:
+            # Fallback for old return format
+            posting_status["twitter_error"] = "Failed to post tweet. See logs for details."
+            posting_status["twitter_error_type"] = "unknown"
+        else:
+            # Unexpected return type
+            posting_status["twitter_error"] = f"Unexpected return type from post_to_twitter: {type(tweet_result)}"
+            posting_status["twitter_error_type"] = "unexpected_return_type"
 
         # Telegram posting attempt
-        telegram_channel = "@tradeducky" # e.g., "@mychannel"
+        telegram_channel = "@trade_ducky" # e.g., "@mychannel"
         if telegram_channel:
             try:
-                await post_to_telegram_channel(tweet_text, media_paths, telegram_channel)
+                valid_channels = await setup_monitored_channels(client, CHANNELS_TO_MONITOR, logger=logger)
+                await post_to_telegram_channel(tweet_text, media_paths, telegram_channel, client, logger=logger)
                 logger.info("Successfully posted to Telegram channel")
                 posting_status["telegram_posted"] = True
             except Exception as e:
@@ -857,7 +637,6 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
                     dest_dir = os.path.join(POSTED_MESSAGES_DIR, f"{dir_basename}_tid_{posting_status['twitter_id']}")
                 else:
                     dest_dir = os.path.join(POSTED_MESSAGES_DIR, dir_basename)
-                    
                 if not os.path.exists(dest_dir):
                     os.makedirs(dest_dir)
                 
@@ -865,13 +644,10 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
                 status_file = os.path.join(dest_dir, "posting_status.json")
                 with open(status_file, "w", encoding="utf-8") as f:
                     json.dump(posting_status, f, indent=2)
-                
-                # Copy all other files
                 for filename in os.listdir(dir_name):
                     src_file = os.path.join(dir_name, filename)
                     if os.path.isfile(src_file):
                         shutil.copy2(src_file, os.path.join(dest_dir, filename))
-                
                 logger.info(f"Message data and status copied to posted directory: {dest_dir}")
             except Exception as e:
                 logger.error(f"Error copying message data to posted directory: {e}")
@@ -879,37 +655,7 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
     else:
         logger.warning("Tweet is either promotional or contains Russian content. It will not be posted.")
 
-###############################
-# New Function: Setup Monitored Channels
-###############################
 
-async def setup_monitored_channels(client, channels_list):
-    """
-    Test each channel and return only the valid ones that can be resolved
-    """
-    valid_channels = []
-    for channel in channels_list:
-        try:
-            logger.info(f"Testing channel: {channel} (type: {type(channel)})")
-            entity = await client.get_input_entity(channel)
-            logger.info(f"Resolved entity: {entity}")
-            valid_channels.append(channel)
-            logger.info(f"Successfully verified channel: {channel}")
-        except ValueError as e:
-            logger.error(f"Invalid channel {channel}: {e}")
-        except Exception as e:
-            logger.error(f"Error verifying channel {channel}: {e}")
-    if not valid_channels:
-        logger.critical("No valid channels to monitor! Check your channel list.")
-    logger.info(f"Monitoring {len(valid_channels)}/{len(channels_list)} channels: {valid_channels}")
-    return valid_channels
-
-# Utility: Print all joined channels for debugging
-async def print_joined_channels(client):
-    print("Listing all joined channels for this session:")
-    async for dialog in client.iter_dialogs():
-        if dialog.is_channel:
-            print(f"{dialog.name} | ID: {dialog.id} | Username: {dialog.entity.username}")
 
 async def main_runner():
     """
@@ -918,18 +664,6 @@ async def main_runner():
     """
     # Start the watchdog task
     asyncio.create_task(watchdog_task())
-
-    global all_channels
-    
-    # Define channels to monitor
-    all_channels = [
-        '@forklog', '@unfolded', '@unfolded_defi', '@decenter', 
-        '@tradeduckydemo', '@cryptoquant_official', '@cryptodaily', '@glassnode',
-        '@crypto02eth', '@RBCCrypto', '@crypto_headlines', '@decryptnews', '@incrypted','@whale_talks',-1002837549832
-    ]
-    
-    # Ensure all numeric IDs are integers
-    all_channels = [parse_channel_id(ch) for ch in all_channels]
     
     while True:
         try:
@@ -941,21 +675,25 @@ async def main_runner():
                     break
                 else:
                     logger.info("Client is authorized")
-                # Print all joined channels for debugging
-                await print_joined_channels(client)
+                
                 # Verify and filter channel list
-                valid_channels = await setup_monitored_channels(client, all_channels)
+                valid_channels = await setup_monitored_channels(client, CHANNELS_TO_MONITOR, logger=logger)
+                
                 if not valid_channels:
                     logger.critical("No valid channels to monitor. Exiting.")
                     break
+                
                 # Remove current handlers
                 client.remove_event_handler(handler)
+                
                 # Add handler with valid channels
                 client.add_event_handler(
                     handler,
                     events.NewMessage(chats=valid_channels)
                 )
+                
                 logger.info(f"Successfully registered handler for {len(valid_channels)} channels")
+                
                 # Log "Listening for messages" periodically
                 while True:
                     try:
@@ -964,6 +702,7 @@ async def main_runner():
                     except Exception as e:
                         logger.error(f"Error in listening heartbeat: {e}")
                         break
+                
                 asyncio.create_task(cleanup_temporary_files())
                 await client.run_until_disconnected()
                 logger.warning("Client disconnected")
@@ -979,21 +718,12 @@ async def main_runner():
             logger.error("Retrying in 5 seconds...")
             await asyncio.sleep(5)
 
-def parse_channel_id(channel):
-    """
-    Ensures that numeric channel IDs are passed as integers, not strings.
-    """
-    if isinstance(channel, str):
-        ch = channel.strip()
-        if ch.startswith('-100') and ch[1:].isdigit():
-            return int(ch)
-    return channel
-
 if __name__ == "__main__":
     try:
         import nest_asyncio
         nest_asyncio.apply()  # allows running the loop within Jupyter if needed
         logger.info("Starting main runner")
+        
         # Setup error handlers and cleanup task
         setup_error_handlers()
         asyncio.run(main_runner())

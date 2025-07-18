@@ -147,6 +147,11 @@ async def tweet_generation(
         )
         full_text = response.choices[0].message.content.strip()
         logger.info(f"Generated tweet content: {full_text}")
+        
+        # Initialize tweet_text with the full response as fallback
+        tweet_text = full_text
+        explanation_text = ""
+        
         if '<<<EXPLANATION_START>>>' in full_text and '<<<EXPLANATION_END>>>' in full_text:
             tweet_text = full_text.split('<<<EXPLANATION_START>>>')[0].strip()
             explanation_text = full_text.split('<<<EXPLANATION_START>>>')[1].split('<<<EXPLANATION_END>>>')[0].strip()

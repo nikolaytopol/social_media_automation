@@ -10,10 +10,13 @@ import signal
 import logging
 import glob
 
+print("[DEBUG] Starting Flask app...")
 app = Flask(__name__)
 CORS(app)
 WORKFLOWS_DIR = os.path.join(os.path.dirname(__file__), 'workflows')
 LOGS_DIR = 'logs'
+
+print("[DEBUG] Initializing WorkflowManager...")
 
 class WorkflowInfo:
     def __init__(self, name, workflow_dir):
@@ -44,6 +47,7 @@ class WorkflowInfo:
 
 class WorkflowManager:
     def __init__(self, workflows_dir=WORKFLOWS_DIR, enable_monitoring=True):
+        print(f"[DEBUG] WorkflowManager.__init__ called with workflows_dir={workflows_dir}")
         self.workflows_dir = workflows_dir
         self.enable_monitoring = enable_monitoring
         self.workflows = {}  # {workflow_name: WorkflowInfo}
@@ -55,12 +59,15 @@ class WorkflowManager:
         os.makedirs(workflows_dir, exist_ok=True)
         
         # Load existing state
+        print("[DEBUG] Loading workflow state...")
         self.load_state()
+        print("[DEBUG] Discovering workflows...")
         self.discover_workflows()
+        print(f"[DEBUG] Workflows discovered: {list(self.workflows.keys())}")
 
     def get_script_path(self, name):
         """Find the main script for a workflow"""
-        for script in [f"{name}_6.py", f"{name}.py", "main.py", "silicon_echo.py"]:
+        for script in [ f"{name}_main.py"]:
             path = os.path.join(self.workflows_dir, name, script)
             if os.path.exists(path):
                 return path
@@ -357,7 +364,9 @@ class WorkflowManager:
         return messages
 
 # Create global workflow manager instance
+print("[DEBUG] Creating global workflow_manager instance...")
 workflow_manager = WorkflowManager()
+print("[DEBUG] workflow_manager instance created.")
 
 # Modified Flask routes to use WorkflowManager
 @app.route('/start', methods=['POST'])
@@ -391,15 +400,33 @@ def list_workflows():
 def logs():
     name = request.args['name']
     lines = int(request.args.get('lines', 40))
-    logs = workflow_manager.get_workflow_logs(name, lines)
-    return Response(''.join(logs), mimetype='text/plain')
+    log_path = os.path.join(LOGS_DIR, f"{name}.log")
+    def event_stream():
+        last_size = 0
+        while True:
+            try:
+                if os.path.exists(log_path):
+                    with open(log_path, 'r', encoding='utf-8', errors='replace') as f:
+                        f.seek(last_size)
+                        new = f.read()
+                        if new:
+                            for line in new.splitlines():
+                                yield f"data: {line}\n\n"
+                        last_size = f.tell()
+                time.sleep(1)
+            except Exception as e:
+                yield f"data: [error] {str(e)}\n\n"
+                time.sleep(2)
+    return Response(event_stream(), mimetype='text/event-stream')
 
 @app.route('/health', methods=['GET'])
 def health():
+    print("[DEBUG] /health endpoint called.")
     health = {
         name: info.status
         for name, info in workflow_manager.workflows.items()
     }
+    print(f"[DEBUG] /health returning: {health}")
     return jsonify({'manager': 'running', 'workflows': health})
 
 @app.route('/workflow/info', methods=['GET'])

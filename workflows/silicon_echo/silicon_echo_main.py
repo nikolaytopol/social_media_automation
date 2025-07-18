@@ -320,9 +320,13 @@ async def process_group_id(grouped_id):
         for idx, msg in enumerate(messages):
             if msg.media:
                 try:
+                    logger.info(f"Current working directory: {os.getcwd()}")
+                    logger.info(f"Intended download directory: {message_dir}")
                     logger.info(f"Downloading media for message ID {msg.id}")
-                    media = await msg.download_media()
-                    if media:
+                    # Save media directly to the message_dir
+                    media = await msg.download_media(file=str(message_dir))
+                    logger.info(f"download_media returned: {media}")
+                    if media and os.path.exists(media):
                         file_ext = os.path.splitext(media)[1]
                         msg_time = msg.date.strftime("%H%M%S")
                         new_filename = f"{msg_time}_{idx}{file_ext}"
@@ -331,7 +335,7 @@ async def process_group_id(grouped_id):
                         media_paths.append(str(new_path))
                         logger.info(f"Media downloaded and moved to: {new_path}")
                     else:
-                        logger.warning(f"Media download returned None for message ID {msg.id}")
+                        logger.error(f"Media file not found after download: {media}")
                 except Exception as e:
                     logger.error(f"Error downloading media: {e}")
             else:
@@ -520,7 +524,7 @@ async def generate_and_post_tweet(text, media_paths, dir_name):
     )
 
     if filter_result == "yes":
-        logger.warning("Tweet identified as promotional or Russian. Skipping posting...")
+        logger.warning("Tweet identified as promotional. Skipping posting...")
         return
 
     # 4. Generate tweet content
